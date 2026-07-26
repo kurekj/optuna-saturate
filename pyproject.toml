@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "optuna-saturate"
+version = "0.1.0"
+description = "Saturate a single GPU during Optuna hyperparameter optimisation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jaroslaw Kurek", email = "jaroslaw_kurek@sggw.edu.pl" }]
+keywords = ["optuna", "hyperparameter-optimization", "gpu", "pytorch", "vmap"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "optuna>=4.0",
+    "torch>=2.2",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+gpu = ["nvidia-ml-py>=12.0"]
+bench = ["torchvision>=0.18"]
+
+[project.urls]
+Homepage = "https://github.com/kurekj/optuna-saturate"
+Repository = "https://github.com/kurekj/optuna-saturate"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/optuna_saturate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Needed so test modules can import shared helpers as `tests.models`.
+pythonpath = ["."]
+markers = ["cuda: test requires a CUDA device"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+# N812: `import torch.nn.functional as F` is the universal PyTorch spelling.
+ignore = ["N812"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+# nvidia-ml-py ships no py.typed marker, so the NVML surface is untyped. It is
+# confined to runtime/nvml.py, which wraps every call in an explicit conversion.
+[[tool.mypy.overrides]]
+module = ["pynvml"]
+ignore_missing_imports = true
