@@ -67,7 +67,7 @@ def test_sgd_accepts_the_learning_rate_vector_from_the_trial_proxy() -> None:
 
     optimiser = ctx.sgd(ensemble, lr=torch.tensor([0.1, 0.2, 0.3]))
 
-    assert optimiser.lr.shape == (3,)
+    assert optimiser.lr.cast.shape == (3,)
 
 
 def test_step_returns_one_loss_per_member() -> None:

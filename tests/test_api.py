@@ -95,7 +95,7 @@ def test_a_typo_in_over_is_rejected_before_any_training_runs() -> None:
 
 
 def test_declaring_a_shape_changing_hyperparameter_fails_loudly() -> None:
-    """Critical test 3 of the project spec, end to end through the public API."""
+    """A wrong declaration must fail loudly, end to end through the public API."""
     study = _study()
     objective = osat.vectorizable(over=["hidden"])(make_bad_over_objective())
 

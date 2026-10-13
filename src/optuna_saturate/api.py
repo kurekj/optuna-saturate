@@ -8,16 +8,21 @@ one batched model, so a group of K costs roughly one training run rather than K.
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
 import optuna
+import torch
 
 from optuna_saturate.core.context import VectorizedContext
 from optuna_saturate.core.space import SpaceClassification, classify
 from optuna_saturate.core.trial import ProbeComplete, ProbeTrial, VectorizedTrial
+from optuna_saturate.exceptions import StopSaturate
 
 _OVER_ATTRIBUTE = "_osat_over"
+
+Callback = Callable[[optuna.Study, optuna.trial.FrozenTrial], None]
 
 
 def vectorizable(over: Sequence[str]) -> Callable[[Any], Any]:
@@ -70,21 +75,18 @@ def _declare_only(
 ) -> tuple[str, ...]:
     """Run the objective just far enough to populate ``trial.params``.
 
-    There is a cycle to break. A freshly asked trial has empty ``params``: Optuna
-    fills them as ``suggest_*`` is called. So the group's architecture is unknown
-    until the objective has run, but the objective cannot run until the group
-    exists. The probe cuts it by stopping at ``ctx.stack`` -- after every
-    declaration, before any training.
+    A freshly asked trial has empty ``params``, which Optuna fills as
+    ``suggest_*`` is called, so the group's architecture is unknown until the
+    objective has run. The probe runs the objective with a context that raises
+    at ``ctx.stack``, after every declaration and before any training.
 
     Re-suggesting a name on the same trial returns Optuna's cached value, so the
-    probed trial then serves as an ordinary member of its own group and nothing
-    is wasted.
+    probed trial is reused as an ordinary member of its own group.
 
     Returns:
         The hyperparameter names the objective declared, in order.
     """
     probe = ProbeTrial(trial, declared=declared, k=k, device=device)
-    # contextlib.suppress rather than try/except/pass: ruff SIM105.
     with contextlib.suppress(ProbeComplete):
         objective(probe, _ProbeContext(probe))
     return tuple(probe.seen)
@@ -96,21 +98,45 @@ def saturate(
     n_trials: int,
     group_size: int = 8,
     device: str | None = None,
+    autocast_dtype: torch.dtype | None = None,
+    timeout: float | None = None,
+    callbacks: Sequence[Callback] | None = None,
 ) -> None:
     """Run ``n_trials`` of ``study``, training vectorisable groups as one model.
 
+    Everything the study was created with is honoured: the sampler chooses the
+    vectorised values of every member, the storage records each member as an
+    ordinary completed trial, and ``study.best_trial``, ``study.trials_dataframe``
+    and the Optuna dashboard read the result unchanged. Two parts of
+    ``study.optimize`` have no counterpart here: pruners (members train
+    together and cannot be stopped one at a time) and ``n_jobs`` (the group is
+    the unit of parallelism). ``GridSampler`` is rejected, since it refuses the
+    partially specified trials from which a group is grown.
+
     Args:
         study: The study to fill. Trials are recorded exactly as
-            ``study.optimize`` would record them.
+            ``study.optimize`` would record them. Must be single-objective.
         objective: A callable ``(trial, ctx)`` decorated with
             :func:`vectorizable`, returning one score per group member.
         n_trials: Total number of trials to run. The final group may be smaller.
         group_size: How many configurations to train together.
         device: Device for models and tensors, for example ``"cuda:0"``.
+        autocast_dtype: Precision for the forward pass and the loss, for example
+            ``torch.bfloat16``. ``None`` keeps float32 throughout.
+        timeout: Stop starting new groups once this many seconds have elapsed,
+            like the argument of the same name on ``study.optimize``. A group
+            that has started always runs to completion.
+        callbacks: Called as ``callback(study, frozen_trial)`` for every member
+            once the whole group has been recorded, in member order, like the
+            argument of the same name on ``study.optimize``. A callback that
+            raises :class:`StopSaturate` ends the run after the current group;
+            ``study.stop()`` cannot be used here, since Optuna allows it only
+            inside ``study.optimize``.
 
     Raises:
         ValueError: ``objective`` was not decorated with :func:`vectorizable`,
-            or returned a number of scores other than the group size.
+            returned a number of scores other than the group size, or the study
+            is multi-objective.
         UnknownHyperparameterError: ``over`` names something outside the space.
         ShapeChangingHyperparameterError: A declared name changes the architecture.
     """
@@ -120,11 +146,25 @@ def saturate(
             "saturate() needs an objective declared with @vectorizable(over=[...]). "
             "Without the declaration there is nothing to vectorise over."
         )
+    if len(study.directions) != 1:
+        raise ValueError(
+            "saturate() supports single-objective studies only; this study has "
+            f"{len(study.directions)} objectives."
+        )
+    if isinstance(study.sampler, optuna.samplers.GridSampler):
+        raise ValueError(
+            "saturate() cannot drive a GridSampler: a group is built by enqueuing "
+            "trials with only the shape-changing values fixed, and GridSampler "
+            "refuses a partially specified trial. Use study.optimize() for a grid."
+        )
 
     classification: SpaceClassification | None = None
     remaining = n_trials
+    started_at = time.perf_counter()
 
     while remaining > 0:
+        if timeout is not None and time.perf_counter() - started_at >= timeout:
+            break
         k = min(group_size, remaining)
         leader = study.ask()
         try:
@@ -136,15 +176,20 @@ def saturate(
             study.tell(leader, state=optuna.trial.TrialState.FAIL)
             raise
 
-        _run_group(
-            study,
-            objective,
-            leader,
-            k,
-            frozenset(classification.preserving),
-            declared,
-            device,
-        )
+        try:
+            _run_group(
+                study,
+                objective,
+                leader,
+                k,
+                frozenset(classification.preserving),
+                declared,
+                device,
+                autocast_dtype,
+                callbacks or (),
+            )
+        except StopSaturate:
+            break
         remaining -= k
 
 
@@ -161,6 +206,8 @@ def _run_group(
     preserving: frozenset[str],
     declared: tuple[str, ...],
     device: str | None,
+    autocast_dtype: torch.dtype | None,
+    callbacks: Sequence[Callback],
 ) -> None:
     """Grow ``leader`` into a group of ``k`` trials sharing its architecture."""
     # The leader's shape-changing values fix the architecture; the sampler stays
@@ -171,7 +218,9 @@ def _run_group(
     trials = [leader] + [study.ask() for _ in range(k - 1)]
 
     proxy = VectorizedTrial(trials, preserving=preserving, device=device)
-    context = VectorizedContext(k=k, declared=declared, device=device)
+    context = VectorizedContext(
+        k=k, declared=declared, device=device, autocast_dtype=autocast_dtype
+    )
 
     try:
         scores = objective(proxy, context)
@@ -182,6 +231,15 @@ def _run_group(
     if len(scores) != k:
         _fail_all(study, trials)
         raise ValueError(f"objective returned {len(scores)} scores but the group holds {k}")
+    try:
+        values = [float(score) for score in scores]
+    except (TypeError, ValueError):
+        _fail_all(study, trials)
+        raise
 
-    for trial, score in zip(trials, scores, strict=True):
-        study.tell(trial, float(score))
+    # Every member is recorded before any callback runs, so a callback that
+    # raises cannot leave part of a trained group unrecorded.
+    frozen = [study.tell(trial, value) for trial, value in zip(trials, values, strict=True)]
+    for trial in frozen:
+        for callback in callbacks:
+            callback(study, trial)

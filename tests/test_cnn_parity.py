@@ -1,8 +1,8 @@
 """Numerical parity for a convolutional network.
 
-Plan 1 proved parity for linear layers only. The benchmark trains convolutions,
-and the paper claims vectorisation in general, so the proof has to cover them
-too. Small sizes and CPU: this runs in CI.
+The linear-layer parity test covers linear layers only. The benchmark trains
+convolutions, and the claim is vectorisation in general, so the proof has to
+cover them too. Small sizes and CPU: this runs in CI.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def test_the_model_has_no_buffers_to_lose() -> None:
 
 
 def test_parameter_count_is_in_the_range_the_project_targets() -> None:
-    """The spec calls 1e4-1e6 parameters 'small models'; the benchmark must sit inside it."""
+    """The library targets models of 1e4-1e6 parameters; the benchmark must sit inside."""
     assert 10_000 < parameter_count(SmallCNN(width=16)) < 1_000_000
 
 

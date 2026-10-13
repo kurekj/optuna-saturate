@@ -32,6 +32,17 @@ class NvmlBackend(Protocol):
         between two readings are meaningful.
         """
 
+    def sm_clock_mhz(self) -> int:
+        """Current streaming-multiprocessor clock, in MHz.
+
+        A device that is mostly idle between small kernels drops into a low
+        power state with a fraction of its peak clock, so the clock is part of
+        what a measurement of such a workload has to report.
+        """
+
+    def temperature_c(self) -> int:
+        """Current device temperature, in degrees Celsius."""
+
     def close(self) -> None:
         """Release the NVML handle."""
 
@@ -73,6 +84,14 @@ class RealNvmlBackend:
             # Reported as unsupported on pre-Volta parts and inside some VMs.
             # A missing counter must degrade the report, not abort the run.
             return None
+
+    def sm_clock_mhz(self) -> int:
+        return int(self._nvml.nvmlDeviceGetClockInfo(self._handle, self._nvml.NVML_CLOCK_SM))
+
+    def temperature_c(self) -> int:
+        return int(
+            self._nvml.nvmlDeviceGetTemperature(self._handle, self._nvml.NVML_TEMPERATURE_GPU)
+        )
 
     def close(self) -> None:
         self._nvml.nvmlShutdown()

@@ -1,0 +1,7 @@
+task,arm,group_size,workers,seed,schedule,trials_completed,distinct_architectures,wall_time_s,budget_s,best_accuracy,busy_fraction,kernel_time_fraction,multi_process_bounds,peak_vram_nvml_mib,peak_vram_torch_mib,energy_j,mean_power_w,mean_sm_clock_mhz,max_temperature_c,epochs,train_subset,loader_workers,device,torch
+fashion_cnn,sequential,,,0,tpe,32,23,32.401,,0.8232,1.0,0.0772,False,2478,138,1209.5,37.3,1011,71,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130
+fashion_cnn,saturate,16,16,0,tpe,32,2,3.002,,0.8213,1.0,0.4683,False,3712,919,334.8,111.5,2211,67,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130
+fashion_cnn,sequential,,,1,tpe,32,20,30.486,,0.8145,1.0,0.0446,False,2544,152,1148.1,37.7,976,68,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130
+fashion_cnn,saturate,16,16,1,tpe,32,2,2.9,,0.8149,1.0,0.4086,False,3352,778,290.8,100.3,2191,69,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130
+fashion_cnn,sequential,,,2,tpe,32,23,30.151,,0.8169,1.0,0.0695,False,2556,152,1116.9,37.0,1054,70,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130
+fashion_cnn,saturate,16,16,2,tpe,32,2,3.171,,0.8164,1.0,0.4201,False,3350,778,327.4,103.3,2252,70,1,8192,0,NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU,2.14.1+cu130

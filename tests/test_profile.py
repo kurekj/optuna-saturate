@@ -121,9 +121,10 @@ def test_an_exception_inside_the_block_still_yields_a_report() -> None:
     """A benchmark loop must be able to record what happened before a failure."""
     backend = FakeNvmlBackend(utilizations=[100], memories=[7 * MIB])
 
-    with pytest.raises(RuntimeError, match="boom"), profile_gpu(
-        backend=backend, interval_s=0.005, kernel_profiling=False
-    ) as prof:
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        profile_gpu(backend=backend, interval_s=0.005, kernel_profiling=False) as prof,
+    ):
         time.sleep(0.05)
         raise RuntimeError("boom")
 
@@ -185,3 +186,48 @@ def test_kernel_profiling_is_skipped_when_cuda_is_unavailable() -> None:
 
     assert prof.report.kernel_time_fraction is None
     assert prof.report.peak_vram_torch_bytes is None
+
+
+def test_mean_power_is_energy_over_wall_time() -> None:
+    profile = build_profile(
+        utilizations=[0],
+        memories=[0],
+        energy_start_mj=0,
+        energy_end_mj=120_000,
+        wall_time_s=4.0,
+    )
+    assert profile.energy_j == pytest.approx(120.0)
+    assert profile.mean_power_w == pytest.approx(30.0)
+
+
+def test_mean_power_is_absent_without_an_energy_counter() -> None:
+    profile = build_profile(
+        utilizations=[0],
+        memories=[0],
+        energy_start_mj=None,
+        energy_end_mj=None,
+        wall_time_s=4.0,
+    )
+    assert profile.mean_power_w is None
+
+
+def test_clock_and_temperature_summaries_come_from_the_samples() -> None:
+    profile = build_profile(
+        utilizations=[0, 0, 0],
+        memories=[0, 0, 0],
+        energy_start_mj=0,
+        energy_end_mj=0,
+        wall_time_s=1.0,
+        sm_clocks=[1000, 2000, 3000],
+        temperatures=[50, 70, 60],
+    )
+    assert profile.mean_sm_clock_mhz == pytest.approx(2000.0)
+    assert profile.max_temperature_c == 70
+
+
+def test_the_profiler_samples_the_clock_and_temperature() -> None:
+    backend = FakeNvmlBackend(utilizations=[0], memories=[0], sm_clocks=[1200], temperatures=[61])
+    with profile_gpu(interval_s=0.01, kernel_profiling=False, backend=backend) as prof:
+        time.sleep(0.05)
+    assert prof.report.mean_sm_clock_mhz == pytest.approx(1200.0)
+    assert prof.report.max_temperature_c == 61

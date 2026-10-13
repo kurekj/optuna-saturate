@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "optuna-saturate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Saturate a single GPU during Optuna hyperparameter optimisation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,9 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10", "pandas>=2.0"]
 gpu = ["nvidia-ml-py>=12.0"]
-bench = ["torchvision>=0.18"]
+bench = ["torchvision>=0.18", "pandas>=2.0", "matplotlib>=3.8"]
+raytune = ["ray[tune]>=2.9"]
 
 [project.urls]
 Homepage = "https://github.com/kurekj/optuna-saturate"

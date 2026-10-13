@@ -101,6 +101,20 @@ class StackedEnsemble:
         plain_result: Tensor = plain(self.params, self.buffers, x)
         return plain_result
 
+    @property
+    def training(self) -> bool:
+        """Whether the members run in training mode (dropout active)."""
+        return bool(self._base.training)
+
+    def train(self, mode: bool = True) -> StackedEnsemble:
+        """Switch every member to training mode, as ``nn.Module.train`` does."""
+        self._base.train(mode)
+        return self
+
+    def eval(self) -> StackedEnsemble:
+        """Switch every member to evaluation mode, as ``nn.Module.eval`` does."""
+        return self.train(False)
+
     def zero_grad(self) -> None:
         """Drop gradients accumulated on the stacked parameters."""
         for tensor in self.params.values():

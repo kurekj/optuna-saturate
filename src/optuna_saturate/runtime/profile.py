@@ -40,14 +40,27 @@ class GpuProfile:
             second, so this lags: a block shorter than that window can read zero
             while genuinely busy, and can read non-zero because of work that ran
             just before it. Trust it over seconds, not milliseconds.
-        kernel_time_fraction: Summed CUDA kernel duration over wall time.
+        kernel_time_fraction: Summed CUDA kernel duration over wall time. The
+            records of successive kernels overlap once kernels are dense, so the
+            sum bounds the share of wall time with a kernel running from above;
+            ``benchmarks/kernel_overlap.py`` measures the difference.
             Occupancy axis. ``None`` when kernel profiling was disabled.
         peak_vram_nvml_bytes: Highest device memory reading. Includes the CUDA
             context and any other process on the device.
         peak_vram_torch_bytes: Highest allocation PyTorch itself made. ``None``
-            when kernel profiling was disabled or CUDA is unavailable.
-        energy_j: Energy drawn during the block, or ``None`` if the device has no
-            energy counter.
+            when CUDA is unavailable.
+        energy_j: Energy drawn by the GPU board during the block, as the
+            difference of NVML's cumulative energy counter, or ``None`` if the
+            device has no such counter. This is the device's own draw as the
+            driver reports it; host CPU, memory and power-supply losses are not
+            included, so it is a GPU figure, not a system one.
+        mean_power_w: ``energy_j / wall_time_s``, the board's average power over
+            the block, or ``None`` when the energy is unavailable.
+        mean_sm_clock_mhz: Mean of the sampled streaming-multiprocessor clock.
+            A device idling between small kernels runs at a fraction of its
+            peak clock, which lengthens the kernels it does run; comparisons
+            across runs should check that this figure is comparable.
+        max_temperature_c: Highest sampled device temperature.
         sample_count: Number of NVML samples taken.
         effective_sample_hz: Sampling rate actually achieved, which is well below
             the requested rate because an NVML query costs tens of milliseconds.
@@ -59,6 +72,9 @@ class GpuProfile:
     peak_vram_nvml_bytes: int
     peak_vram_torch_bytes: int | None
     energy_j: float | None
+    mean_power_w: float | None
+    mean_sm_clock_mhz: float
+    max_temperature_c: int
     sample_count: int
     effective_sample_hz: float
 
@@ -71,6 +87,8 @@ def build_profile(
     wall_time_s: float,
     kernel_time_fraction: float | None = None,
     peak_vram_torch_bytes: int | None = None,
+    sm_clocks: Sequence[int] = (),
+    temperatures: Sequence[int] = (),
 ) -> GpuProfile:
     """Turn raw samples into a profile.
 
@@ -84,6 +102,8 @@ def build_profile(
         wall_time_s: Duration of the measured block.
         kernel_time_fraction: Occupancy axis, when available.
         peak_vram_torch_bytes: PyTorch's own peak allocation, when available.
+        sm_clocks: Clock readings in MHz, one per sample.
+        temperatures: Temperature readings in degrees Celsius, one per sample.
 
     Returns:
         The assembled profile. A run that collected no samples yields zeros
@@ -96,8 +116,11 @@ def build_profile(
     )
 
     energy_j: float | None = None
+    mean_power_w: float | None = None
     if energy_start_mj is not None and energy_end_mj is not None:
         energy_j = (energy_end_mj - energy_start_mj) / 1000.0
+        if wall_time_s > 0:
+            mean_power_w = energy_j / wall_time_s
 
     return GpuProfile(
         wall_time_s=wall_time_s,
@@ -106,6 +129,9 @@ def build_profile(
         peak_vram_nvml_bytes=max(memories) if memories else 0,
         peak_vram_torch_bytes=peak_vram_torch_bytes,
         energy_j=energy_j,
+        mean_power_w=mean_power_w,
+        mean_sm_clock_mhz=sum(sm_clocks) / len(sm_clocks) if sm_clocks else 0.0,
+        max_temperature_c=max(temperatures) if temperatures else 0,
         sample_count=sample_count,
         effective_sample_hz=sample_count / wall_time_s if wall_time_s > 0 else 0.0,
     )
@@ -138,11 +164,15 @@ class _Sampler(threading.Thread):
         self._stop_event = threading.Event()
         self.utilizations: list[int] = []
         self.memories: list[int] = []
+        self.sm_clocks: list[int] = []
+        self.temperatures: list[int] = []
 
     def run(self) -> None:
         while not self._stop_event.is_set():
             self.utilizations.append(self._backend.utilization_percent())
             self.memories.append(self._backend.memory_used_bytes())
+            self.sm_clocks.append(self._backend.sm_clock_mhz())
+            self.temperatures.append(self._backend.temperature_c())
             # wait() rather than sleep(): a stop request ends the thread at once
             # instead of after one more full interval.
             self._stop_event.wait(self._interval_s)
@@ -212,15 +242,20 @@ def profile_gpu(
     sampler = _Sampler(active_backend, interval_s)
     profiler = _Profiler(sampler)
 
-    # The occupancy axis needs both a CUDA build and a visible device.
-    collect_kernels = kernel_profiling and torch.cuda.is_available()
+    # The kernel trace needs both a CUDA build and a visible device; PyTorch's
+    # memory statistics need only the device, and are cheap, so they are
+    # collected whether or not the trace is.
+    track_memory = torch.cuda.is_available()
+    collect_kernels = kernel_profiling and track_memory
 
     torch_profiler: Any = None
+    if track_memory:
+        torch.cuda.init()  # type: ignore[no-untyped-call]
+        torch.cuda.reset_peak_memory_stats(device)
     if collect_kernels:
         from torch.profiler import ProfilerActivity
         from torch.profiler import profile as torch_profile
 
-        torch.cuda.reset_peak_memory_stats(device)
         torch_profiler = torch_profile(activities=[ProfilerActivity.CUDA])
         torch_profiler.__enter__()
 
@@ -237,14 +272,15 @@ def profile_gpu(
 
         kernel_time_fraction: float | None = None
         peak_vram_torch_bytes: int | None = None
-        if collect_kernels:
+        if track_memory:
             # Kernels are asynchronous; without this the trace is short by
             # whatever was still in flight when the block ended.
             torch.cuda.synchronize(device)
+            peak_vram_torch_bytes = int(torch.cuda.max_memory_allocated(device))
+        if collect_kernels:
             torch_profiler.__exit__(None, None, None)
             if wall_time_s > 0:
                 kernel_time_fraction = _kernel_time_seconds(torch_profiler) / wall_time_s
-            peak_vram_torch_bytes = int(torch.cuda.max_memory_allocated(device))
 
         profiler._finish(
             build_profile(
@@ -255,6 +291,8 @@ def profile_gpu(
                 wall_time_s=wall_time_s,
                 kernel_time_fraction=kernel_time_fraction,
                 peak_vram_torch_bytes=peak_vram_torch_bytes,
+                sm_clocks=sampler.sm_clocks,
+                temperatures=sampler.temperatures,
             )
         )
 

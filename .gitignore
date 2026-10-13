@@ -12,3 +12,7 @@ data/
 *.ckpt
 *.db
 .idea/
+.venv*/
+ray_results/
+results/tmp/
+results/logs/

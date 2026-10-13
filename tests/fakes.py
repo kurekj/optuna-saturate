@@ -18,10 +18,16 @@ class FakeNvmlBackend:
         utilizations: Sequence[int] = (0,),
         memories: Sequence[int] = (0,),
         energies: Sequence[int] | None = (0,),
+        sm_clocks: Sequence[int] = (1500,),
+        temperatures: Sequence[int] = (50,),
     ) -> None:
         self._utilizations = list(utilizations)
         self._memories = list(memories)
         self._energies = None if energies is None else list(energies)
+        self._sm_clocks = list(sm_clocks)
+        self._temperatures = list(temperatures)
+        self._clock_calls = 0
+        self._temperature_calls = 0
         self._utilization_calls = 0
         self._memory_calls = 0
         self._energy_calls = 0
@@ -46,6 +52,16 @@ class FakeNvmlBackend:
             return None
         value = self._advance(self._energies, self._energy_calls)
         self._energy_calls += 1
+        return value
+
+    def sm_clock_mhz(self) -> int:
+        value = self._advance(self._sm_clocks, self._clock_calls)
+        self._clock_calls += 1
+        return value
+
+    def temperature_c(self) -> int:
+        value = self._advance(self._temperatures, self._temperature_calls)
+        self._temperature_calls += 1
         return value
 
     def close(self) -> None:
